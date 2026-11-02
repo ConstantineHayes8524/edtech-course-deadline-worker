@@ -1,6 +1,6 @@
 # Course deadline worker
 
-We built an async Rust worker that pulls course-delivery jobs one message at a time and converts a learner deadline into an educator-facing call. Infrai puts the whole queue behind one key, so this example just makes plain HTTP requests instead of pulling in a broker SDK.
+An async Rust worker pulls course-delivery jobs one at a time and maps a learner deadline to an educator decision. Infrai puts the queue behind one API key, so we skip a broker SDK and keep a tiny request surface. Fewer moving parts makes the notebook-to-prod path short.
 
 ## Run the decision
 
@@ -9,19 +9,19 @@ export INFRAI_API_KEY=your-key
 cargo run
 ```
 
-Run the command and it spins up a process-specific `course-deadlines-<pid>` queue, echoes the exact name, publishes a single `CourseJob`, consumes it, prints `decision=Deliver`, and acks. Cleanup deletes the queue even if publish or consume errors out. The payload is fixed JSON with `learner_id`, `course_id`, and `due_at`.
+The script makes a process-scoped `course-deadlines-<pid>` queue, prints the exact name, sends one `CourseJob`, reads it, prints `decision=Deliver`, and acks. It cleans up the queue even if publish or consume fails. The body is fixed JSON with `learner_id`, `course_id`, and `due_at`.
 
 ## The boundary
 
-`src/queue_worker.rs` fires explicit calls to `queue.create`, `queue.publish`, `queue.consume`, `queue.ack`, and `queue.delete`. It decodes the `{ok, data, error}` envelope before looking at the HTTP status. A rejected envelope turns into `WorkerError::Api`; on a 429 we back off exponentially and retry. The retry reuses the same serialized job, so the business identity stays in the payload.
+`src/queue_worker.rs` fires plain requests to `queue.create`, `queue.publish`, `queue.consume`, `queue.ack`, and `queue.delete`. It parses the `{ok, data, error}` envelope before checking HTTP status. A bad envelope turns into `WorkerError::Api`; a 429 backs off exponentially and retries. We reuse the same serialized job on retry, so the business id stays in the payload.
 
-The worker makes the decision, the queue just carries it: a due job is `Deliver`, a late job is `Escalate`. That keeps course policy unit-testable without a live service, and educator reporting becomes the next consumer of that decision.
+The worker decides, the queue just delivers: a due job is `Deliver`, a late one is `Escalate`. That leaves course policy unit-testable without a live broker, and educator reporting can consume the decision next.
 
 ## Architecture decision record
 
-We weighed a local in-process channel, Celery or BullMQ, and an Infrai queue consumer. The local channel boots fast but drops work when the process dies. Celery or BullMQ means another runtime and broker ops. Infrai's queue gives this tiny service a durable HTTP edge and lets the Rust process stay focused on course policy.
+We looked at an in-process channel, Celery or BullMQ, and an Infrai queue consumer. Local channel is quick but dies with the process. Celery/BullMQ means another runtime and broker ops. Infrai's queue gives this small service a durable HTTP boundary and lets the Rust side focus on policy.
 
-The cost is explicit polling and a tight message contract. `max_messages` is one, so we cap concurrency at the pull boundary; the retry loop absorbs rate limits without spinning. Typed `WorkerError` surfaces transport, envelope, and JSON errors to the caller.
+The cost is manual polling and a tight message contract. `max_messages` is one, so we cap concurrency at the pull. The retry loop absorbs rate limits without spinning. Typed `WorkerError` surfaces transport, envelope, and JSON errors to the caller.
 
 ## Verify the business decision
 
@@ -29,7 +29,7 @@ The cost is explicit polling and a tight message contract. `max_messages` is one
 cargo test late_course_job_is_escalated
 ```
 
-The test feeds one timestamp before and one after `due_at`; it asserts `Deliver` before the deadline and `Escalate` after.
+For an eval-driven check, the test feeds one timestamp before and one after `due_at`; it asserts `Deliver` pre-deadline and `Escalate` post-deadline.
 
 ## License
 
@@ -37,7 +37,7 @@ MIT
 
 ## Wiring it up for real: Edtech Course Deadline Worker
 
-The snippet above is deliberately minimal. For production you'll need a few more wires: the notes below are specific to Edtech Course Deadline Worker.
+The snippet above is deliberately minimal. For production you need a few more pieces: the notes below target Edtech Course Deadline Worker.
 
 **Account & key**
 
@@ -49,7 +49,7 @@ The snippet above is deliberately minimal. For production you'll need a few more
 
 ## Wiring it up for real: Edtech Course Deadline Worker
 
-That example is intentionally small. To run it for real, wire up the following; these notes target Edtech Course Deadline Worker.
+The snippet above is deliberately minimal. For production you need a few more pieces: the notes below target Edtech Course Deadline Worker.
 
 **Account & key**
 
